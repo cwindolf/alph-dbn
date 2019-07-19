@@ -1,31 +1,29 @@
 import numpy as np
+import tensorflow as tf
 import string, itertools
-from machines import AlphDBN, CategoricalFullHeightConvRBM as cRBM
-
-np.seterr(over='raise')
+from alphdbn import net
 
 
-ALPHABET = string.ascii_lowercase + '., '
-N = len(ALPHABET)
-itoa = dict(enumerate(ALPHABET))
-atoi = dict((a, i) for i, a in enumerate(ALPHABET))
+alphabet = string.ascii_lowercase + '., '
+alphabet_size = len(alphabet)
+itoa = dict(enumerate(alphabet))
+atoi = dict((a, i) for i, a in enumerate(alphabet))
 
-DEM = 'demons.txt'
-LPC = 'lpc.txt'
+demons_txt = 'demons.txt'
+lpc_txt = 'lpc.txt'
 
 # *************************************************************************** #
 # Data processing
 
 def munge(aloloc, min_len=7):
-    aloloi = []
+    aloi = []
     for aloc in aloloc:
         aloi = []
         for c in aloc.strip().lower():
             if c in atoi:
                 aloi.append(atoi[c])
-        if len(aloi) >= min_len:
-            aloloi.append(np.array(aloi, dtype=int))
-    return aloloi
+        aloi.append(atoi[' '])
+    return np.array(aloi, )
 
 
 def test(corpus, min_len=30):
@@ -56,39 +54,33 @@ if __name__ == '__main__':
     # *********************************************************************** #
     # Munge
 
-    with open(LPC, 'r') as dat:
-        lpc_corpus = munge(dat, min_len=15)
+    # with open(LPC, 'r') as dat:
+    #     lpc_corpus = munge(dat)
 
-    with open(DEM, 'r') as dat:
-        dem_corpus = munge(dat, min_len=45)
+    with open(demons_txt, 'r') as dat:
+        dem_corpus = munge(dat)
 
     # *********************************************************************** #
     # Train
 
-    dbn = AlphDBN('lpcdbn', N)
+    dbn = net(alphabet_size, 32, 5, 128)
+    init_op_ = tf.global_variables_initializer()
 
-    dbn.add_layer(cRBM('layer0', N, 3, 128, {
-            'type': 0,
-            'lambda': 0.05,
-            'target': 0.2,
-            'eta': 0.5,
-        },  w_init=0.25, hb_init=-0.8, lr=2e-4, lrd=1e-5, wd=1.25,
-        mo=0.5, categorical_inputs=True, itoa=itoa,
-        pad_i=atoi[' ']))
+    with tf.Session() as sess:
+        sess.run(init_op_)
+        for i in range(10000):
+            rand_start = np.random.randint(dem_corpus.size - 32)
+            sess.run(dbn.train_op_, feed_dict={
+                    dbn.beta: 0.4,
+                    dbn.stimulus: dem_corpus[rand_start:rand_start + 32],
+                })
 
-    # dbn.load('.')
-    dbn.train_top_layer(itertools.chain(dem_corpus, dem_corpus, dem_corpus, lpc_corpus, dem_corpus, lpc_corpus))
-    dbn.save('.')
-
-    test(lpc_corpus)
-
-    dbn.add_layer(cRBM('layer1', 128, 9, 32,
-            w_init=0.2, hb_init=-0.6, lr=1e-4, lrd=1e-4, wd=0.5, spt=0.1, spl=0.5,
-            spe=0.1, mo=0.5, categorical_inputs=False))
-    
-    # dbn.load('.')
-    dbn.train_top_layer(itertools.chain(dem_corpus, lpc_corpus, lpc_corpus, lpc_corpus))
-    dbn.save('.')
-
-    test(lpc_corpus)
-
+            if not i % 100:
+                # run sample chain
+                sample = dem_corpus[rand_start:rand_start + 32]
+                for j in range(20):
+                    sample = sess.run(dbn.vis_sample, feed_dict={
+                            dbn.beta: 0.4,
+                            dbn.stimulus: sample,
+                        })
+                    print(sample)
