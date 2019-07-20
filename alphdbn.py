@@ -10,20 +10,26 @@ tfd = tfp.distributions
 
 
 def adjoint(filters):
-    return tf.transpose(tf.reverse(filters, axis=1), (2, 1, 0))
+    return tf.transpose(tf.reverse(filters, axis=(1,)), (2, 1, 0))
 
 
 def conv(K, x):
     """strided on width, fixed on height"""
-    # hw -> 1hw1
+    h, f, H = K.shape
+    w, h_ = x.shape
+    assert h == h_, f"need (x height:{h_})==(K in height: {h})"
+    # wh -> 1hw1
+    x = tf.transpose(x, (1, 0))
     x = tf.expand_dims(x, 0)
     x = tf.expand_dims(x, -1)
-    # hfH -> 1hfH
-    K = tf.expand_dims(K, 0)
-    # 11(w-f+1)H -> H(w-f+1)
+    # hfH -> hf1H
+    K = tf.expand_dims(K, 2)
+    # 1hw1, hf1H -> 1(h-h+1==1)(w-f+1)H
     res = tf.nn.conv2d(x, K, padding="VALID")
+    # 11(w-f+1)H -> (w-f+1)H
     res = tf.squeeze(res)
-    res = tf.transpose(res, (1, 0))
+    # let's make sure...
+    assert res.shape == (w - f + 1, H)
     return res
 
 
@@ -125,29 +131,44 @@ def net(
         ),
     )
     filters_ = tf.get_variable(
-        "filters0", initializer=np.random.normal(size=filter_shape)
+        "filters0",
+        initializer=np.random.normal(size=filter_shape).astype(np.float32),
     )
+    adjoints_ = adjoint(filters_)
 
     # params ----------------------------------------------------------
     beta_ = tf.placeholder(tf.float32, name="beta")
 
     # samplers --------------------------------------------------------
     def vis_given_hid(hiddens_):
+        print(f'vis_given_hid, hiddens_.shape={hiddens_.shape}')
         in_logits_ = beta_ * conv(adjoint(filters_), hiddens_)
         in_cat_rv_ = tfd.Categorical(logits=in_logits_)
         return in_cat_rv_.sample()
 
     def hid_given_vis(visibles_):
         onehots_ = tf.one_hot(visibles_, alphabet_size)
-        hid_logits_ = beta_ * conv(filters_, onehots_)
+        print(f'hid_given_vis:')
+        print(f'    visibles_.shape={visibles_.shape}')
+        print(f'    onehots_.shape={onehots_.shape}')
+        print(f'    adjoints_.shape={adjoints_.shape}')
+        hid_logits_ = beta_ * conv(adjoints_, onehots_)
         hid_ber_rv_ = tfd.Bernoulli(logits=hid_logits_)
         return hid_ber_rv_.sample()
 
     # log likelihood --------------------------------------------------
-    def energy(inputs_, hiddens_, filters_):
-        in_logits_ = conv(adjoint(filters_), hiddens_)
+    def energy(visibles_, hiddens_, filters_):
+        print(f'energy:')
+        print(f'    visibles_.shape={visibles_.shape}')
+        onehots_ = tf.one_hot(visibles_, alphabet_size)
+        print(f'    onehots_.shape={onehots_.shape}')
+        print(f'    hiddens_.shape={hiddens_.shape}')
+        print(f'    filters_.shape={filters_.shape}')
+        adjoints_ = adjoint(filters_)
+        print(f'    adjoints_.shape={adjoints_.shape}')
+        in_logits_ = conv(adjoints_, hiddens_)
         filter_energy_ = filters_rv.log_prob(filters_)
-        return filter_energy_ + tf.reduce_sum(in_logits_ * inputs_)
+        return filter_energy_ + tf.reduce_sum(in_logits_ * onehots_)
 
     # training step ops -----------------------------------------------
     # pass in a stimulus...
@@ -173,12 +194,13 @@ def net(
         probs=np.full(hid_shape, hid_p_target, dtype=np.float32)
     )
     hid_map_init_ = hid_rv.sample()
-    # get map estimate for hids
+
     def energy_and_grads(hiddens_):
         energy_ = energy(stimulus_, hiddens_, filters_)
         grads_ = tf.gradients(energy_, hiddens_)
         return energy_, grads_
 
+    # get map estimate for hids
     hid_map_res = tfp.optimizer.lbfgs_minimize(
         energy_and_grads, hid_map_init_, max_iterations=100
     )
