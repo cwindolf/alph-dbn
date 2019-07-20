@@ -60,8 +60,10 @@ class GibbsKernel(tfp.mcmc.TransitionKernel):
             first from below and the second from above.
         """
         self.n = len(blocks)
+        print(f"GibbsKernel n={self.n}")
         self.odds = list(range(1, self.n, 2))
-        self.evens = list(range(2, self.n, 2))
+        self.evens = list(range(0, self.n, 2))
+        print(self.odds, self.evens)
         self.blocks = blocks
         self.energy = energy
         self.extra_args = extra_args
@@ -84,10 +86,10 @@ class GibbsKernel(tfp.mcmc.TransitionKernel):
 
         # Now the evens
         for i in self.evens:
-            if i == self.n - 1:
-                state[i] = self.blocks[i](state[-2])
-            elif i == 0:
+            if i == 0:
                 state[i] = self.blocks[i](state[1])
+            elif i == self.n - 1:
+                state[i] = self.blocks[i](state[-2])
             else:
                 state[i] = self.blocks[i](state[i - 1], state[i + 1])
 
@@ -120,9 +122,9 @@ def net(
     filter_len,
     hid_height,
     hid_p_target=0.1,
-    filter_scale=1.0,
     lr=0.01,
     momentum=0.1,
+    wd=0.1,
 ):
     """Make an RBM with categorical inputs
     """
@@ -133,16 +135,14 @@ def net(
     nhid = (seq_len - filter_len + 1) * hid_height
 
     # variables -------------------------------------------------------
-    filters_rv = tfd.Normal(
-        loc=tf.constant(np.zeros(filter_shape, dtype=np.float32)),
-        scale=tf.constant(
-            np.full(filter_shape, filter_scale, dtype=np.float32)
-        ),
-    )
     filters_ = tf.get_variable(
         "filters0",
         initializer=np.random.normal(size=filter_shape).astype(np.float32),
         trainable=False,
+    )
+    hiddens_rv = tfd.Bernoulli(
+        probs=np.full(hid_shape, hid_p_target).astype(np.float32),
+        dtype=tf.float32,
     )
 
     # params ----------------------------------------------------------
@@ -150,43 +150,32 @@ def net(
 
     # samplers --------------------------------------------------------
     def vis_given_hid(hiddens_):
-        print(f"vis_given_hid, hiddens_.shape={hiddens_.shape}")
         in_logits_ = beta_ * conv_adj(filters_, hiddens_)
         in_cat_rv = tfd.Categorical(logits=in_logits_)
-        return in_cat_rv.sample(sample_shape=vis_shape)
+        return in_cat_rv.sample()
 
     def hid_given_vis(visibles_):
-        print(f"hid_given_vis:")
-        print(f"    visibles_.shape={visibles_.shape}")
-        print(f"    visibles_.dtype={visibles_.dtype}")
         onehots_ = tf.one_hot(visibles_, alphabet_size)
-        print(f"    onehots_.shape={onehots_.shape}")
-        print(f"    filters_.shape={filters_.shape}")
         hid_logits_ = beta_ * conv(filters_, onehots_)
-        print(f"    hid_logits_.shape={hid_logits_.shape}")
         hid_ber_rv = tfd.Bernoulli(logits=hid_logits_, dtype=tf.float32)
-        print(f"    hid_ber_rv.batch_shape={hid_ber_rv.batch_shape}")
         hid_sample_ = hid_ber_rv.sample()
-        print(f"    hid_sample_.shape={hid_sample_.shape}")
         return hid_sample_
 
     # log likelihood --------------------------------------------------
     def energy(visibles_, hiddens_, filters_):
-        print(f"energy:")
-        print(f"    visibles_.shape={visibles_.shape}")
-        print(f"    visibles_.dtype={visibles_.dtype}")
-        print(f"    hiddens_.shape={hiddens_.shape}")
-        print(f"    hiddens_.dtype={hiddens_.dtype}")
-        print(f"    filters_.shape={filters_.shape}")
-        print(f"    filters_.dtype={filters_.dtype}")
         onehots_ = tf.one_hot(visibles_, alphabet_size)
-        print(f"    onehots_.shape={onehots_.shape}")
-        print(f"    onehots_.dtype={onehots_.dtype}")
         in_logits_ = conv_adj(filters_, hiddens_)
-        filter_energy_ = tf.reduce_sum(filters_rv.log_prob(filters_))
-        return filter_energy_ + tf.reduce_sum(in_logits_ * onehots_)
+        model_energy_ = tf.reduce_sum(in_logits_ * onehots_)
+        filter_energy_ = wd * tf.reduce_sum(tf.square(filters_))
+        sparsity_energy_ = -tf.reduce_sum(hiddens_rv.log_prob(hiddens_))
+        # print_energies_ = tf.print(
+        #     "model_energy_", model_energy_,
+        #     "filter_energy_", filter_energy_)
+        # with tf.control_dependencies([print_energies_]):
+        total_energy = filter_energy_ + model_energy_ + sparsity_energy_
+        return total_energy
 
-    # training step ops -----------------------------------------------
+    # hallucination ops -----------------------------------------------
     # pass in a stimulus...
     stimulus_ = tf.placeholder(tf.int32, shape=vis_shape, name="stimulus")
     # start with hids zeroed out
@@ -207,34 +196,17 @@ def net(
     )
     vis_sample_, hid_sample_ = res
 
-    # hallucination ops -----------------------------------------------
-    # start with random hids
+    # training ops ----------------------------------------------------
+    # sample
+    logits_ = beta_ * conv(filters_, tf.one_hot(stimulus_, alphabet_size))
     hid_rv = tfd.Bernoulli(
-        probs=np.full(hid_shape, hid_p_target, dtype=np.float32),
+        logits=logits_,
         dtype=tf.float32,
     )
-    hid_map_init_ = tf.reshape(hid_rv.sample(), (nhid,))
-
-    def energy_and_grads(hiddens_):
-        hiddens_ = tf.reshape(hiddens_, hid_shape)
-        print("energy_and_grads:")
-        energy_ = energy(stimulus_, hiddens_, filters_)
-        print(f"    energy_.dtype={energy_.dtype}")
-        print(f"    energy_.shape={energy_.shape}")
-        grads_ = tf.gradients(energy_, hiddens_)[0]
-        print(f"    grads_.shape={grads_.shape}")
-        grads_ = tf.reshape(grads_, (nhid,))
-        return energy_, grads_
-
-    # get map estimate for hids
-    hid_map_res = tfp.optimizer.lbfgs_minimize(
-        value_and_gradients_function=energy_and_grads,
-        initial_position=hid_map_init_,
-    )
-    hid_map_ = tf.reshape(hid_map_res.position, hid_shape)
+    hid_sample_ = hid_rv.sample()
     # do some gradient descent on filters with vis/hids fixed
     opt = tf.train.MomentumOptimizer(lr, momentum)
-    cost_ = energy(stimulus_, hid_map_, filters_)
+    cost_ = energy(stimulus_, hid_sample_, filters_)
     train_op_ = opt.minimize(cost_, var_list=[filters_])
 
     # build return pack -----------------------------------------------

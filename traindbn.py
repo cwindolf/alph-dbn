@@ -4,6 +4,7 @@ import string, itertools
 from alphdbn import net
 
 
+seq_len = 128
 alphabet = string.ascii_lowercase + '., '
 alphabet_size = len(alphabet)
 itoa = dict(enumerate(alphabet))
@@ -38,27 +39,27 @@ if __name__ == '__main__':
 
     # ------------------------------ train ----------------------------
 
-    dbn = net(alphabet_size, 32, 5, 128)
+    dbn = net(alphabet_size, seq_len, 5, 128)
     init_op_ = tf.global_variables_initializer()
 
     with tf.Session() as sess:
         sess.run(init_op_)
         for i in range(10000):
-            rand_start = np.random.randint(dem_corpus.size - 32)
+            rand_start = np.random.randint(dem_corpus.size - seq_len)
             cost, _ = sess.run([dbn.cost, dbn.train_op], feed_dict={
                     dbn.beta: 1.0,
-                    dbn.stimulus: dem_corpus[rand_start:rand_start + 32],
+                    dbn.stimulus: dem_corpus[rand_start:rand_start + seq_len],
                 })
             print(cost)
 
-            if not i % 100:
+            if not i % 250:
                 # run sample chain
-                sample = dem_corpus[rand_start:rand_start + 32]
+                sample = dem_corpus[rand_start:rand_start + seq_len]
                 print('start:')
                 print(''.join(itoa[i] for i in sample))
-                for j in range(20):
+                for j in range(5):
                     sample, = sess.run(dbn.vis_sample, feed_dict={
-                            dbn.beta: 1.0,
+                            dbn.beta: 2.0,
                             dbn.stimulus: sample,
                         })
                     print(''.join(itoa[i] for i in sample))
