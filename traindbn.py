@@ -12,56 +12,31 @@ atoi = dict((a, i) for i, a in enumerate(alphabet))
 demons_txt = 'demons.txt'
 lpc_txt = 'lpc.txt'
 
-# *************************************************************************** #
-# Data processing
+# -------------------------- data processing --------------------------
 
 def munge(aloloc, min_len=7):
     aloi = []
     for aloc in aloloc:
-        aloi = []
         for c in aloc.strip().lower():
             if c in atoi:
                 aloi.append(atoi[c])
         aloi.append(atoi[' '])
-    return np.array(aloi, )
+    return np.array(aloi).astype(np.int32)
 
 
-def test(corpus, min_len=30):
-    for seq in corpus:
-        if len(seq) < min_len: continue
-        print('New Seq: ------------------')
-        print(''.join(itoa[i] for i in seq))
-        try:
-            beta = float(input('Choose beta: '))
-            beta_rate = float(input('Choose beta rate: '))
-            max_beta = float(input('Choose max beta: '))
-        except:
-            print('OK bai.')
-            return
-        for res in dbn.gibbs(seq, 64, beta=beta, beta_rate=beta_rate, max_beta=max_beta):
-            print(''.join(itoa[i] for i in res.argmax(axis=1)))
-
-
-# *************************************************************************** #
+# ---------------------------------------------------------------------
 if __name__ == '__main__':
-    # *********************************************************************** #
-    # from tqdm import tqdm
-    # import argparse
-
-    # ap = argparse.ArgumentParser()
-    # args = ap.parse_args()
-
-    # *********************************************************************** #
-    # Munge
+    # ------------------------------ munge ----------------------------
 
     # with open(LPC, 'r') as dat:
     #     lpc_corpus = munge(dat)
 
     with open(demons_txt, 'r') as dat:
         dem_corpus = munge(dat)
+    print('dem corpus', dem_corpus.dtype)
+    print(dem_corpus)
 
-    # *********************************************************************** #
-    # Train
+    # ------------------------------ train ----------------------------
 
     dbn = net(alphabet_size, 32, 5, 128)
     init_op_ = tf.global_variables_initializer()
@@ -70,17 +45,20 @@ if __name__ == '__main__':
         sess.run(init_op_)
         for i in range(10000):
             rand_start = np.random.randint(dem_corpus.size - 32)
-            sess.run(dbn.train_op_, feed_dict={
-                    dbn.beta: 0.4,
+            cost, _ = sess.run([dbn.cost, dbn.train_op], feed_dict={
+                    dbn.beta: 1.0,
                     dbn.stimulus: dem_corpus[rand_start:rand_start + 32],
                 })
+            print(cost)
 
             if not i % 100:
                 # run sample chain
                 sample = dem_corpus[rand_start:rand_start + 32]
+                print('start:')
+                print(''.join(itoa[i] for i in sample))
                 for j in range(20):
-                    sample = sess.run(dbn.vis_sample, feed_dict={
-                            dbn.beta: 0.4,
+                    sample, = sess.run(dbn.vis_sample, feed_dict={
+                            dbn.beta: 1.0,
                             dbn.stimulus: sample,
                         })
-                    print(sample)
+                    print(''.join(itoa[i] for i in sample))
