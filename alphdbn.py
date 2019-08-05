@@ -215,20 +215,7 @@ def net(
         trace_fn=None,
         parallel_iterations=1,
     )
-    long_chain_res = tfp.mcmc.sample_chain(
-        num_results=128,
-        current_state=[stimulus_, init_hids_],
-        kernel=gk,
-        num_burnin_steps=0,
-        num_steps_between_results=2,
-        trace_fn=None,
-        parallel_iterations=1)
-    print('lcr', long_chain_res)
-    long_chain_vis = tf.squeeze(long_chain_res[0])
-    print('mcmcres', res)
     vis_sample_, hid_sample_ = (tf.squeeze(s) for s in res)
-
-    print('mcmcres vis_sample_', vis_sample_)
 
     # training ops ----------------------------------------------------
     # sample
@@ -248,13 +235,17 @@ def net(
     train_op_ = opt.minimize(cost_, var_list=[filters_, biases_])
 
     # hallucination function ------------------------------------------
-    def vis_sample_chain(sess, beta=1.0):
-        start_vis = np.random.randint(alphabet_size, size=(batch_size, seq_len))
-        vis_samples = sess.run(long_chain_vis, feed_dict={
-                stimulus_: start_vis,
-                beta_: beta,
-            })
-        return vis_samples
+    def vis_sample_chain(sess, beta_of_t, n, skip_not_mod=1):
+        vis_sample = np.random.randint(alphabet_size, size=(batch_size, seq_len))
+        vis_samples = [vis_sample]
+        for t in range(n):
+            vis_sample = sess.run(vis_sample_, feed_dict={
+                    stimulus_: vis_sample,
+                    beta_: beta_of_t(t),
+                })
+            if not t % skip_not_mod:
+                vis_samples.append(vis_sample)
+        return np.array(vis_samples)
 
     # build return pack -----------------------------------------------
     net = AlphRBM(
